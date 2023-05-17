@@ -1,0 +1,721 @@
+<!DOCTYPE html>
+<html>
+
+<style>
+    #closest-color-result {
+        display: flex;
+        flex-direction: row;
+        justify-content: flex-start;
+    }
+
+    .column {
+        margin: 5px;
+        font-family: 'Courier New', monospace;
+        border: 2px solid black;
+    }
+
+    #colorButtons {
+        display: grid;
+        grid-template-columns: repeat(7, auto);
+        justify-content: start;
+    }
+
+    #colorButtons button {
+        width: 75px;
+        height: 25px;
+        border: 2px solid black;
+        border-radius: 5px;
+        margin: 5px;
+        cursor: pointer;
+    }
+
+    .footer {
+        position: fixed;
+        text-align: center;
+        bottom: 0px;
+        left: 0px;
+        right: 0px;
+        width: 100%;
+        background-color: grey;
+    }
+</style>
+
+<head>
+    <title>X11 Color Finder</title>
+</head>
+
+<body>
+    <label for="color-picker">Pick a color: </label>
+    <input type="color" id="color-picker" name="color-picker">
+    <br>
+    <br>
+    <label for="imageUpload">Upload an image: </label>
+    <input type="file" id="imageUpload" accept="image/*" />
+    <div id="colorButtons"></div>
+    <br>
+    <div id="closest-color-result"><span id="closest-color-text"></span></div>
+
+    <div class="footer">2023.05.17, v1.0</div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/color-thief/2.3.0/color-thief.umd.js"></script>
+
+    <script>
+        document.getElementById('imageUpload').addEventListener('change', parseImageColors);
+
+        const colorThief = new ColorThief();
+
+        function parseImageColors() {
+            const input = document.getElementById('imageUpload');
+            let img = new Image();
+            img.crossOrigin = 'Anonymous';
+            img.src = URL.createObjectURL(input.files[0]);
+
+            img.onload = function () {
+                let palette1 = colorThief.getPalette(img, 2);
+                let palette6 = colorThief.getPalette(img, 5);
+                let palette14 = colorThief.getPalette(img, 14);
+                let colorButtonsContainer = document.getElementById('colorButtons');
+
+                // Remove old color buttons
+                while (colorButtonsContainer.firstChild) {
+                    colorButtonsContainer.firstChild.remove();
+                }
+
+                createImageColorButtons(palette1, 'black');
+                createImageColorButtons(palette6, 'red');
+                createImageColorButtons(palette14, 'white');
+            };
+        }
+
+        function createImageColorButtons(palette, borderColor) {
+            let colorButtonsContainer = document.getElementById('colorButtons');
+
+            for (let color of palette) {
+                const r = color[0];
+                const g = color[1];
+                const b = color[2];
+
+                let button = document.createElement('button');
+                button.id = 'colorButton';
+                button.style.backgroundColor = `rgb(${r}, ${g}, ${b})`;
+                button.style.borderColor = borderColor;
+                button.textContent = rgbToHex(r, g, b);
+
+                // If the background color is dark, change the text color to white
+                const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+                if (luminance < 0.5) {
+                    button.style.color = 'white';
+                }
+
+                button.onclick = function () {
+                    findClosestColorFromRGB(r, g, b);
+                };
+                colorButtonsContainer.appendChild(button);
+            }
+        }
+
+    </script>
+
+    <script>
+        document.getElementById('color-picker').addEventListener('input', findClosestColor);
+
+        function rgbToHsv(r, g, b) {
+            r /= 255, g /= 255, b /= 255;
+
+            let max = Math.max(r, g, b), min = Math.min(r, g, b);
+            let h, s, v = max;
+
+            let d = max - min;
+            s = max === 0 ? 0 : d / max;
+
+            if (max === min) {
+                h = 0; // achromatic
+            } else {
+                switch (max) {
+                    case r: h = (g - b) / d + (g < b ? 6 : 0); break;
+                    case g: h = (b - r) / d + 2; break;
+                    case b: h = (r - g) / d + 4; break;
+                }
+                h /= 6;
+            }
+
+            return [h, s, v];
+        }
+
+        function hsvDistance([h1, s1, v1], [h2, s2, v2]) {
+            let dh = Math.min(Math.abs(h1 - h2), 1 - Math.abs(h1 - h2));
+            let ds = Math.abs(s1 - s2);
+            let dv = Math.abs(v1 - v2);
+            return Math.sqrt(dh * dh + ds * ds + dv * dv);
+        }
+
+        function findClosestColorHSV(r, g, b) {
+            const hsv = rgbToHsv(r, g, b);
+
+            let closestColors = [];
+            let remainingColors = [...colors];
+
+            for (let i = 0; i < 10; i++) {
+                let [[id, distance]] = remainingColors
+                    .map(([id, _, r1, g1, b1]) => (
+                        [id, hsvDistance(hsv, rgbToHsv(r1, g1, b1))]
+                    ))
+                    .sort(([, d1], [, d2]) => d1 - d2);
+
+                const color = colors.find(([colorId]) => colorId == id);
+                const closenessPercent = 100 - (distance / Math.sqrt(1 + 1 + (255 / 255) ** 2)) * 100;
+
+                let newColor = color.slice();
+                newColor.push(closenessPercent);
+                closestColors.push(newColor);
+                const [_, __, r1, g1, b1] = color;
+                remainingColors = remainingColors.filter(([_, __, r2, g2, b2]) => !(r2 == r1 && g2 == g1 && b2 == b1));
+            }
+
+            addColorOutput("HSV", closestColors);
+        }
+
+        function findClosestColorRGB(r, g, b) {
+
+            let closestColors = [];
+            let remainingColors = [...colors];  // Copy the colors array
+
+            for (let i = 0; i < 10; i++) {
+                let [[id, distance]] = remainingColors
+                    .map(([id, _, r1, g1, b1]) => (
+                        [id, Math.sqrt((r - r1) ** 2 + (g - g1) ** 2 + (b - b1) ** 2)]
+                    ))
+                    .sort(([, d1], [, d2]) => d1 - d2);
+
+                const color = colors.find(([colorId]) => colorId == id);
+                const closenessPercent = 100 - (distance / Math.sqrt(3 * 255 ** 2)) * 100;
+
+                let newColor = color.slice();
+                newColor.push(closenessPercent);
+                closestColors.push(newColor);
+
+                const [_, __, r1, g1, b1] = color;
+                remainingColors = remainingColors.filter(([_, __, r2, g2, b2]) => !(r2 == r1 && g2 == g1 && b2 == b1));
+            }
+
+            addColorOutput("RGB", closestColors);
+        }
+
+        const rgbToHex = (r, g, b) => '#' + [r, g, b].map(x => {
+            const hex = x.toString(16).toUpperCase();
+            return hex.length === 1 ? '0' + hex : hex
+        }).join('')
+
+
+        function findClosestColorFromRGB(r, g, b) {
+            const resultContainer = document.getElementById('closest-color-result');
+            resultContainer.innerHTML = '';
+
+            findClosestColorRGB(r, g, b);
+            findClosestColorHSV(r, g, b);
+        }
+
+        function findClosestColor() {
+
+            const colorPicker = document.getElementById('color-picker');
+            const r = parseInt(colorPicker.value.slice(1, 3), 16);
+            const g = parseInt(colorPicker.value.slice(3, 5), 16);
+            const b = parseInt(colorPicker.value.slice(5, 7), 16);
+
+            findClosestColorFromRGB(r, g, b);
+        }
+
+        function addColorOutput(name, filteredColors) {
+            const resultContainer = document.getElementById('closest-color-result');
+
+            // Create a new div for the column
+            const columnDiv = document.createElement('div');
+            columnDiv.classList.add('column');
+
+            var separator = document.createElement('div');
+            separator.textContent = name;
+            columnDiv.appendChild(separator);
+
+            for (let [id, name, r, g, b, closenessPercent] of filteredColors) {
+                const colorDiv = document.createElement('div');
+                colorDiv.style.backgroundColor = `rgb(${r}, ${g}, ${b})`;
+
+                // If the background color is dark, change the text color to white
+                const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+                if (luminance < 0.5) {
+                    colorDiv.style.color = 'white';
+                }
+
+                let paddedPercent = closenessPercent.toFixed(2).padStart(7, ' ');
+                paddedPercent = paddedPercent.replace(/ /g, '&nbsp;');
+                colorDiv.innerHTML = `${paddedPercent}% ${rgbToHex(r, g, b)} ${name}`;
+                columnDiv.appendChild(colorDiv);
+            }
+
+            // Add the new column to the result container
+            resultContainer.appendChild(columnDiv);
+        }
+
+        const colors = [
+            [0, "snow", 255, 250, 250],
+            [0, "ghost white", 248, 248, 255],
+            [0, "white smoke", 245, 245, 245],
+            [0, "gainsboro", 220, 220, 220],
+            [0, "floral white", 255, 250, 240],
+            [0, "old lace", 253, 245, 230],
+            [0, "linen", 250, 240, 230],
+            [0, "antique white", 250, 235, 215],
+            [0, "papaya whip", 255, 239, 213],
+            [0, "blanched almond", 255, 235, 205],
+            [0, "bisque", 255, 228, 196],
+            [0, "peach puff", 255, 218, 185],
+            [0, "navajo white", 255, 222, 173],
+            [0, "moccasin", 255, 228, 181],
+            [0, "cornsilk", 255, 248, 220],
+            [0, "ivory", 255, 255, 240],
+            [0, "lemon chiffon", 255, 250, 205],
+            [0, "seashell", 255, 245, 238],
+            [0, "honeydew", 240, 255, 240],
+            [0, "mint cream", 245, 255, 250],
+            [0, "azure", 240, 255, 255],
+            [0, "alice blue", 240, 248, 255],
+            [0, "lavender", 230, 230, 250],
+            [0, "lavender blush", 255, 240, 245],
+            [0, "misty rose", 255, 228, 225],
+            [0, "white", 255, 255, 255],
+            [0, "black", 0, 0, 0],
+            [0, "dark slate gray", 47, 79, 79],
+            [0, "dim gray", 105, 105, 105],
+            [0, "slate gray", 112, 128, 144],
+            [0, "light slate gray", 119, 136, 153],
+            [0, "gray", 190, 190, 190],
+            [0, "light gray", 211, 211, 211],
+            [0, "midnight blue", 25, 25, 112],
+            [0, "navy", 0, 0, 128],
+            [0, "navy blue", 0, 0, 128],
+            [0, "cornflower blue", 100, 149, 237],
+            [0, "dark slate blue", 72, 61, 139],
+            [0, "slate blue", 106, 90, 205],
+            [0, "medium slate blue", 123, 104, 238],
+            [0, "light slate blue", 132, 112, 255],
+            [0, "medium blue", 0, 0, 205],
+            [0, "royal blue", 65, 105, 225],
+            [0, "blue", 0, 0, 255],
+            [0, "dodger blue", 30, 144, 255],
+            [0, "deep sky blue", 0, 191, 255],
+            [0, "sky blue", 135, 206, 235],
+            [0, "light sky blue", 135, 206, 250],
+            [0, "steel blue", 70, 130, 180],
+            [0, "light steel blue", 176, 196, 222],
+            [0, "light blue", 173, 216, 230],
+            [0, "powder blue", 176, 224, 230],
+            [0, "pale turquoise", 175, 238, 238],
+            [0, "dark turquoise", 0, 206, 209],
+            [0, "medium turquoise", 72, 209, 204],
+            [0, "turquoise", 64, 224, 208],
+            [0, "cyan", 0, 255, 255],
+            [0, "light cyan", 224, 255, 255],
+            [0, "cadet blue", 95, 158, 160],
+            [0, "medium aquamarine", 102, 205, 170],
+            [0, "aquamarine", 127, 255, 212],
+            [0, "dark green", 0, 100, 0],
+            [0, "dark olive green", 85, 107, 47],
+            [0, "dark sea green", 143, 188, 143],
+            [0, "sea green", 46, 139, 87],
+            [0, "medium sea green", 60, 179, 113],
+            [0, "light sea green", 32, 178, 170],
+            [0, "pale green", 152, 251, 152],
+            [0, "spring green", 0, 255, 127],
+            [0, "lawn green", 124, 252, 0],
+            [0, "green", 0, 255, 0],
+            [0, "chartreuse", 127, 255, 0],
+            [0, "medium spring green", 0, 250, 154],
+            [0, "green yellow", 173, 255, 47],
+            [0, "lime green", 50, 205, 50],
+            [0, "yellow green", 154, 205, 50],
+            [0, "forest green", 34, 139, 34],
+            [0, "olive drab", 107, 142, 35],
+            [0, "dark khaki", 189, 183, 107],
+            [0, "khaki", 240, 230, 140],
+            [0, "pale goldenrod", 238, 232, 170],
+            [0, "light goldenrod yellow", 250, 250, 210],
+            [0, "light yellow", 255, 255, 224],
+            [0, "yellow", 255, 255, 0],
+            [0, "gold", 255, 215, 0],
+            [0, "light goldenrod", 238, 221, 130],
+            [0, "goldenrod", 218, 165, 32],
+            [0, "dark goldenrod", 184, 134, 11],
+            [0, "rosy brown", 188, 143, 143],
+            [0, "indian red", 205, 92, 92],
+            [0, "saddle brown", 139, 69, 19],
+            [0, "sienna", 160, 82, 45],
+            [0, "peru", 205, 133, 63],
+            [0, "burlywood", 222, 184, 135],
+            [0, "beige", 245, 245, 220],
+            [0, "wheat", 245, 222, 179],
+            [0, "sandy brown", 244, 164, 96],
+            [0, "tan", 210, 180, 140],
+            [0, "chocolate", 210, 105, 30],
+            [0, "firebrick", 178, 34, 34],
+            [0, "brown", 165, 42, 42],
+            [0, "dark salmon", 233, 150, 122],
+            [0, "salmon", 250, 128, 114],
+            [0, "light salmon", 255, 160, 122],
+            [0, "orange", 255, 165, 0],
+            [0, "dark orange", 255, 140, 0],
+            [0, "coral", 255, 127, 80],
+            [0, "light coral", 240, 128, 128],
+            [0, "tomato", 255, 99, 71],
+            [0, "orange red", 255, 69, 0],
+            [0, "red", 255, 0, 0],
+            [0, "hot pink", 255, 105, 180],
+            [0, "deep pink", 255, 20, 147],
+            [0, "pink", 255, 192, 203],
+            [0, "light pink", 255, 182, 193],
+            [0, "pale violet red", 219, 112, 147],
+            [0, "maroon", 176, 48, 96],
+            [0, "medium violet red", 199, 21, 133],
+            [0, "violet red", 208, 32, 144],
+            [0, "magenta", 255, 0, 255],
+            [0, "violet", 238, 130, 238],
+            [0, "plum", 221, 160, 221],
+            [0, "orchid", 218, 112, 214],
+            [0, "medium orchid", 186, 85, 211],
+            [0, "dark orchid", 153, 50, 204],
+            [0, "dark violet", 148, 0, 211],
+            [0, "blue violet", 138, 43, 226],
+            [0, "purple", 160, 32, 240],
+            [0, "medium purple", 147, 112, 219],
+            [0, "thistle", 216, 191, 216],
+            [0, "snow 1", 255, 250, 250],
+            [0, "snow 2", 238, 233, 233],
+            [0, "snow 3", 205, 201, 201],
+            [0, "snow 4", 139, 137, 137],
+            [0, "seashell 1", 255, 245, 238],
+            [0, "seashell 2", 238, 229, 222],
+            [0, "seashell 3", 205, 197, 191],
+            [0, "seashell 4", 139, 134, 130],
+            [0, "antique white 1", 255, 239, 219],
+            [0, "antique white 2", 238, 223, 204],
+            [0, "antique white 3", 205, 192, 176],
+            [0, "antique white 4", 139, 131, 120],
+            [0, "bisque 1", 255, 228, 196],
+            [0, "bisque 2", 238, 213, 183],
+            [0, "bisque 3", 205, 183, 158],
+            [0, "bisque 4", 139, 125, 107],
+            [0, "peach puff 1", 255, 218, 185],
+            [0, "peach puff 2", 238, 203, 173],
+            [0, "peach puff 3", 205, 175, 149],
+            [0, "peach puff 4", 139, 119, 101],
+            [0, "navajo white 1", 255, 222, 173],
+            [0, "navajo white 2", 238, 207, 161],
+            [0, "navajo white 3", 205, 179, 139],
+            [0, "navajo white 4", 139, 121, 94],
+            [0, "lemon chiffon 1", 255, 250, 205],
+            [0, "lemon chiffon 2", 238, 233, 191],
+            [0, "lemon chiffon 3", 205, 201, 165],
+            [0, "lemon chiffon 4", 139, 137, 112],
+            [0, "cornsilk 1", 255, 248, 220],
+            [0, "cornsilk 2", 238, 232, 205],
+            [0, "cornsilk 3", 205, 200, 177],
+            [0, "cornsilk 4", 139, 136, 120],
+            [0, "ivory 1", 255, 255, 240],
+            [0, "ivory 2", 238, 238, 224],
+            [0, "ivory 3", 205, 205, 193],
+            [0, "ivory 4", 139, 139, 131],
+            [0, "honeydew 1", 240, 255, 240],
+            [0, "honeydew 2", 224, 238, 224],
+            [0, "honeydew 3", 193, 205, 193],
+            [0, "honeydew 4", 131, 139, 131],
+            [0, "lavender blush 1", 255, 240, 245],
+            [0, "lavender blush 2", 238, 224, 229],
+            [0, "lavender blush 3", 205, 193, 197],
+            [0, "lavender blush 4", 139, 131, 134],
+            [0, "misty rose 1", 255, 228, 225],
+            [0, "misty rose 2", 238, 213, 210],
+            [0, "misty rose 3", 205, 183, 181],
+            [0, "misty rose 4", 139, 125, 123],
+            [0, "azure 1", 240, 255, 255],
+            [0, "azure 2", 224, 238, 238],
+            [0, "azure 3", 193, 205, 205],
+            [0, "azure 4", 131, 139, 139],
+            [0, "slate blue 1", 131, 111, 255],
+            [0, "slate blue 2", 122, 103, 238],
+            [0, "slate blue 3", 105, 89, 205],
+            [0, "slate blue 4", 71, 60, 139],
+            [0, "royal blue 1", 72, 118, 255],
+            [0, "royal blue 2", 67, 110, 238],
+            [0, "royal blue 3", 58, 95, 205],
+            [0, "royal blue 4", 39, 64, 139],
+            [0, "blue 1", 0, 0, 255],
+            [0, "blue 2", 0, 0, 238],
+            [0, "blue 3", 0, 0, 205],
+            [0, "blue 4", 0, 0, 139],
+            [0, "dodger blue 1", 30, 144, 255],
+            [0, "dodger blue 2", 28, 134, 238],
+            [0, "dodger blue 3", 24, 116, 205],
+            [0, "dodger blue 4", 16, 78, 139],
+            [0, "steel blue 1", 99, 184, 255],
+            [0, "steel blue 2", 92, 172, 238],
+            [0, "steel blue 3", 79, 148, 205],
+            [0, "steel blue 4", 54, 100, 139],
+            [0, "deep sky blue 1", 0, 191, 255],
+            [0, "deep sky blue 2", 0, 178, 238],
+            [0, "deep sky blue 3", 0, 154, 205],
+            [0, "deep sky blue 4", 0, 104, 139],
+            [0, "sky blue 1", 135, 206, 255],
+            [0, "sky blue 2", 126, 192, 238],
+            [0, "sky blue 3", 108, 166, 205],
+            [0, "sky blue 4", 74, 112, 139],
+            [0, "light sky blue 1", 176, 226, 255],
+            [0, "light sky blue 2", 164, 211, 238],
+            [0, "light sky blue 3", 141, 182, 205],
+            [0, "light sky blue 4", 96, 123, 139],
+            [0, "slate gray 1", 198, 226, 255],
+            [0, "slate gray 2", 185, 211, 238],
+            [0, "slate gray 3", 159, 182, 205],
+            [0, "slate gray 4", 108, 123, 139],
+            [0, "light steel blue 1", 202, 225, 255],
+            [0, "light steel blue 2", 188, 210, 238],
+            [0, "light steel blue 3", 162, 181, 205],
+            [0, "light steel blue 4", 110, 123, 139],
+            [0, "light blue 1", 191, 239, 255],
+            [0, "light blue 2", 178, 223, 238],
+            [0, "light blue 3", 154, 192, 205],
+            [0, "light blue 4", 104, 131, 139],
+            [0, "light cyan 1", 224, 255, 255],
+            [0, "light cyan 2", 209, 238, 238],
+            [0, "light cyan 3", 180, 205, 205],
+            [0, "light cyan 4", 122, 139, 139],
+            [0, "pale turquoise 1", 187, 255, 255],
+            [0, "pale turquoise 2", 174, 238, 238],
+            [0, "pale turquoise 3", 150, 205, 205],
+            [0, "pale turquoise 4", 102, 139, 139],
+            [0, "cadet blue 1", 152, 245, 255],
+            [0, "cadet blue 2", 142, 229, 238],
+            [0, "cadet blue 3", 122, 197, 205],
+            [0, "cadet blue 4", 83, 134, 139],
+            [0, "turquoise 1", 0, 245, 255],
+            [0, "turquoise 2", 0, 229, 238],
+            [0, "turquoise 3", 0, 197, 205],
+            [0, "turquoise 4", 0, 134, 139],
+            [0, "cyan 1", 0, 255, 255],
+            [0, "cyan 2", 0, 238, 238],
+            [0, "cyan 3", 0, 205, 205],
+            [0, "cyan 4", 0, 139, 139],
+            [0, "dark slate gray 1", 151, 255, 255],
+            [0, "dark slate gray 2", 141, 238, 238],
+            [0, "dark slate gray 3", 121, 205, 205],
+            [0, "dark slate gray 4", 82, 139, 139],
+            [0, "aquamarine 1", 127, 255, 212],
+            [0, "aquamarine 2", 118, 238, 198],
+            [0, "aquamarine 3", 102, 205, 170],
+            [0, "aquamarine 4", 69, 139, 116],
+            [0, "dark sea green 1", 193, 255, 193],
+            [0, "dark sea green 2", 180, 238, 180],
+            [0, "dark sea green 3", 155, 205, 155],
+            [0, "dark sea green 4", 105, 139, 105],
+            [0, "sea green 1", 84, 255, 159],
+            [0, "sea green 2", 78, 238, 148],
+            [0, "sea green 3", 67, 205, 128],
+            [0, "sea green 4", 46, 139, 87],
+            [0, "pale green 1", 154, 255, 154],
+            [0, "pale green 2", 144, 238, 144],
+            [0, "pale green 3", 124, 205, 124],
+            [0, "pale green 4", 84, 139, 84],
+            [0, "spring green 1", 0, 255, 127],
+            [0, "spring green 2", 0, 238, 118],
+            [0, "spring green 3", 0, 205, 102],
+            [0, "spring green 4", 0, 139, 69],
+            [0, "green 1", 0, 255, 0],
+            [0, "green 2", 0, 238, 0],
+            [0, "green 3", 0, 205, 0],
+            [0, "green 4", 0, 139, 0],
+            [0, "chartreuse 1", 127, 255, 0],
+            [0, "chartreuse 2", 118, 238, 0],
+            [0, "chartreuse 3", 102, 205, 0],
+            [0, "chartreuse 4", 69, 139, 0],
+            [0, "olive drab 1", 192, 255, 62],
+            [0, "olive drab 2", 179, 238, 58],
+            [0, "olive drab 3", 154, 205, 50],
+            [0, "olive drab 4", 105, 139, 34],
+            [0, "dark olive green 1", 202, 255, 112],
+            [0, "dark olive green 2", 188, 238, 104],
+            [0, "dark olive green 3", 162, 205, 90],
+            [0, "dark olive green 4", 110, 139, 61],
+            [0, "khaki 1", 255, 246, 143],
+            [0, "khaki 2", 238, 230, 133],
+            [0, "khaki 3", 205, 198, 115],
+            [0, "khaki 4", 139, 134, 78],
+            [0, "light goldenrod 1", 255, 236, 139],
+            [0, "light goldenrod 2", 238, 220, 130],
+            [0, "light goldenrod 3", 205, 190, 112],
+            [0, "light goldenrod 4", 139, 129, 76],
+            [0, "light yellow 1", 255, 255, 224],
+            [0, "light yellow 2", 238, 238, 209],
+            [0, "light yellow 3", 205, 205, 180],
+            [0, "light yellow 4", 139, 139, 122],
+            [0, "yellow 1", 255, 255, 0],
+            [0, "yellow 2", 238, 238, 0],
+            [0, "yellow 3", 205, 205, 0],
+            [0, "yellow 4", 139, 139, 0],
+            [0, "gold 1", 255, 215, 0],
+            [0, "gold 2", 238, 201, 0],
+            [0, "gold 3", 205, 173, 0],
+            [0, "gold 4", 139, 117, 0],
+            [0, "goldenrod 1", 255, 193, 37],
+            [0, "goldenrod 2", 238, 180, 34],
+            [0, "goldenrod 3", 205, 155, 29],
+            [0, "goldenrod 4", 139, 105, 20],
+            [0, "dark goldenrod 1", 255, 185, 15],
+            [0, "dark goldenrod 2", 238, 173, 14],
+            [0, "dark goldenrod 3", 205, 149, 12],
+            [0, "dark goldenrod 4", 139, 101, 8],
+            [0, "rosy brown 1", 255, 193, 193],
+            [0, "rosy brown 2", 238, 180, 180],
+            [0, "rosy brown 3", 205, 155, 155],
+            [0, "rosy brown 4", 139, 105, 105],
+            [0, "indian red 1", 255, 106, 106],
+            [0, "indian red 2", 238, 99, 99],
+            [0, "indian red 3", 205, 85, 85],
+            [0, "indian red 4", 139, 58, 58],
+            [0, "sienna 1", 255, 130, 71],
+            [0, "sienna 2", 238, 121, 66],
+            [0, "sienna 3", 205, 104, 57],
+            [0, "sienna 4", 139, 71, 38],
+            [0, "burlywood 1", 255, 211, 155],
+            [0, "burlywood 2", 238, 197, 145],
+            [0, "burlywood 3", 205, 170, 125],
+            [0, "burlywood 4", 139, 115, 85],
+            [0, "wheat 1", 255, 231, 186],
+            [0, "wheat 2", 238, 216, 174],
+            [0, "wheat 3", 205, 186, 150],
+            [0, "wheat 4", 139, 126, 102],
+            [0, "tan 1", 255, 165, 79],
+            [0, "tan 2", 238, 154, 73],
+            [0, "tan 3", 205, 133, 63],
+            [0, "tan 4", 139, 90, 43],
+            [0, "chocolate 1", 255, 127, 36],
+            [0, "chocolate 2", 238, 118, 33],
+            [0, "chocolate 3", 205, 102, 29],
+            [0, "chocolate 4", 139, 69, 19],
+            [0, "firebrick 1", 255, 48, 48],
+            [0, "firebrick 2", 238, 44, 44],
+            [0, "firebrick 3", 205, 38, 38],
+            [0, "firebrick 4", 139, 26, 26],
+            [0, "brown 1", 255, 64, 64],
+            [0, "brown 2", 238, 59, 59],
+            [0, "brown 3", 205, 51, 51],
+            [0, "brown 4", 139, 35, 35],
+            [0, "salmon 1", 255, 140, 105],
+            [0, "salmon 2", 238, 130, 98],
+            [0, "salmon 3", 205, 112, 84],
+            [0, "salmon 4", 139, 76, 57],
+            [0, "light salmon 1", 255, 160, 122],
+            [0, "light salmon 2", 238, 149, 114],
+            [0, "light salmon 3", 205, 129, 98],
+            [0, "light salmon 4", 139, 87, 66],
+            [0, "orange 1", 255, 165, 0],
+            [0, "orange 2", 238, 154, 0],
+            [0, "orange 3", 205, 133, 0],
+            [0, "orange 4", 139, 90, 0],
+            [0, "dark orange 1", 255, 127, 0],
+            [0, "dark orange 2", 238, 118, 0],
+            [0, "dark orange 3", 205, 102, 0],
+            [0, "dark orange 4", 139, 69, 0],
+            [0, "coral 1", 255, 114, 86],
+            [0, "coral 2", 238, 106, 80],
+            [0, "coral 3", 205, 91, 69],
+            [0, "coral 4", 139, 62, 47],
+            [0, "tomato 1", 255, 99, 71],
+            [0, "tomato 2", 238, 92, 66],
+            [0, "tomato 3", 205, 79, 57],
+            [0, "tomato 4", 139, 54, 38],
+            [0, "orange red 1", 255, 69, 0],
+            [0, "orange red 2", 238, 64, 0],
+            [0, "orange red 3", 205, 55, 0],
+            [0, "orange red 4", 139, 37, 0],
+            [0, "red 1", 255, 0, 0],
+            [0, "red 2", 238, 0, 0],
+            [0, "red 3", 205, 0, 0],
+            [0, "red 4", 139, 0, 0],
+            [0, "debian red", 215, 7, 81],
+            [0, "deep pink 1", 255, 20, 147],
+            [0, "deep pink 2", 238, 18, 137],
+            [0, "deep pink 3", 205, 16, 118],
+            [0, "deep pink 4", 139, 10, 80],
+            [0, "hot pink 1", 255, 110, 180],
+            [0, "hot pink 2", 238, 106, 167],
+            [0, "hot pink 3", 205, 96, 144],
+            [0, "hot pink 4", 139, 58, 98],
+            [0, "pink 1", 255, 181, 197],
+            [0, "pink 2", 238, 169, 184],
+            [0, "pink 3", 205, 145, 158],
+            [0, "pink 4", 139, 99, 108],
+            [0, "light pink 1", 255, 174, 185],
+            [0, "light pink 2", 238, 162, 173],
+            [0, "light pink 3", 205, 140, 149],
+            [0, "light pink 4", 139, 95, 101],
+            [0, "pale violet red 1", 255, 130, 171],
+            [0, "pale violet red 2", 238, 121, 159],
+            [0, "pale violet red 3", 205, 104, 137],
+            [0, "pale violet red 4", 139, 71, 93],
+            [0, "maroon 1", 255, 52, 179],
+            [0, "maroon 2", 238, 48, 167],
+            [0, "maroon 3", 205, 41, 144],
+            [0, "maroon 4", 139, 28, 98],
+            [0, "violet red 1", 255, 62, 150],
+            [0, "violet red 2", 238, 58, 140],
+            [0, "violet red 3", 205, 50, 120],
+            [0, "violet red 4", 139, 34, 82],
+            [0, "magenta 1", 255, 0, 255],
+            [0, "magenta 2", 238, 0, 238],
+            [0, "magenta 3", 205, 0, 205],
+            [0, "magenta 4", 139, 0, 139],
+            [0, "orchid 1", 255, 131, 250],
+            [0, "orchid 2", 238, 122, 233],
+            [0, "orchid 3", 205, 105, 201],
+            [0, "orchid 4", 139, 71, 137],
+            [0, "plum 1", 255, 187, 255],
+            [0, "plum 2", 238, 174, 238],
+            [0, "plum 3", 205, 150, 205],
+            [0, "plum 4", 139, 102, 139],
+            [0, "medium orchid 1", 224, 102, 255],
+            [0, "medium orchid 2", 209, 95, 238],
+            [0, "medium orchid 3", 180, 82, 205],
+            [0, "medium orchid 4", 122, 55, 139],
+            [0, "dark orchid 1", 191, 62, 255],
+            [0, "dark orchid 2", 178, 58, 238],
+            [0, "dark orchid 3", 154, 50, 205],
+            [0, "dark orchid 4", 104, 34, 139],
+            [0, "purple 1", 155, 48, 255],
+            [0, "purple 2", 145, 44, 238],
+            [0, "purple 3", 125, 38, 205],
+            [0, "purple 4", 85, 26, 139],
+            [0, "medium purple 1", 171, 130, 255],
+            [0, "medium purple 2", 159, 121, 238],
+            [0, "medium purple 3", 137, 104, 205],
+            [0, "medium purple 4", 93, 71, 139],
+            [0, "thistle 1", 255, 225, 255],
+            [0, "thistle 2", 238, 210, 238],
+            [0, "thistle 3", 205, 181, 205],
+            [0, "thistle 4", 139, 123, 139],
+            [0, "dark gray", 169, 169, 169],
+            [0, "dark blue", 0, 0, 139],
+            [0, "dark cyan", 0, 139, 139],
+            [0, "dark magenta", 139, 0, 139],
+            [0, "dark red", 139, 0, 0],
+            [0, "light green", 144, 238, 144],
+        ]
+
+        function prepare_colors_ids() {
+            for (let index = 0; index < colors.length; index++) {
+                colors[index][0] = index;
+            }
+        }
+
+        prepare_colors_ids();
+    </script>
+</body>
+
+</html>
